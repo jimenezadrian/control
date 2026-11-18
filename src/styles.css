@@ -93,3 +93,10 @@ input:focus, select:focus, textarea:focus { outline: 2px solid var(--brand); bor
 
 .login { max-width: 400px; margin: 0 auto; padding: 2rem 1rem; }
 .login .card { padding: 1.4rem; }
+
+/* Productos de una venta */
+.item-row { border: 1px solid var(--border); background: #fbfdfc; border-radius: 12px; padding: .8rem; margin-bottom: .6rem; }
+.progress { height: 10px; background: var(--border); border-radius: 999px; overflow: hidden; margin: .4rem 0; }
+.progress > div { height: 100%; background: var(--brand); }
+.pay-row { display: flex; align-items: center; justify-content: space-between; gap: .6rem; padding: .6rem 0; border-top: 1px solid var(--border); }
+.pay-row:first-child { border-top: 0; }

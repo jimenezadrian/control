@@ -89,6 +89,17 @@ export default function Capital() {
         Utilidad total esperada de todas las ventas: <b>{money(k.utilidadEstimada)}</b>.
       </div>
 
+      <h2>Dinero de tandas</h2>
+      <div className="grid">
+        <Stat label="Aportaciones recibidas" value={money(k.aportaciones)} />
+        <Stat label="Aplicado a pedidos" value={money(k.aplicado)} />
+        <Stat label="Devuelto a participantes" value={money(k.devuelto)} />
+        <Stat label="En resguardo" value={money(k.resguardo)} tone="warn" />
+      </div>
+      <div className="help" style={{ marginTop: '.8rem' }}>
+        El dinero de las tandas es de los participantes: no es capital propio ni utilidad. Solo se vuelve cobro de una venta cuando la bolsa se aplica a un pedido.
+      </div>
+
       <h2>Movimientos</h2>
       <div className="card">
         {moves.length === 0 && <Empty>Aún no hay movimientos.</Empty>}

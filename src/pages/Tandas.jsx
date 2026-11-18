@@ -3,9 +3,9 @@ import { supabase } from '../supabase.js';
 import { useData } from '../data.jsx';
 import { Empty, Field, Modal, MoneyInput, check, confirmar, parseAmount, useAction } from '../ui.jsx';
 import { fmtDate, money, r2, today } from '../utils.js';
+import { NewSaleModal, SaleCard } from './Ventas.jsx';
 
 const FREQS = ['Semanal', 'Quincenal', 'Mensual'];
-const isActive = (g) => String(g.status || '').toLowerCase().startsWith('activ');
 
 // ---------- Crear tanda ----------
 function NewGroupModal({ onClose }) {
@@ -13,64 +13,79 @@ function NewGroupModal({ onClose }) {
   const { busy, run } = useAction();
   const [name, setName] = useState('');
   const [amount, setAmount] = useState('');
-  const [freq, setFreq] = useState('Semanal');
+  const [nPart, setNPart] = useState('');
   const [periods, setPeriods] = useState('');
+  const [periodsTouched, setPeriodsTouched] = useState(false);
+  const [freq, setFreq] = useState('Semanal');
   const [start, setStart] = useState(today());
   const [error, setError] = useState('');
 
+  const bag = Number(amount) * Number(nPart);
+
   async function save() {
     setError('');
-    let a, p;
+    let a, n, p;
     try {
       if (!name.trim()) throw new Error('Escribe el nombre de la tanda.');
       a = parseAmount(amount, 'el importe de la aportación');
+      n = Math.round(Number(nPart));
+      if (!n || n < 1) throw new Error('Escribe la cantidad de participantes.');
       p = Math.round(Number(periods));
-      if (!p || p < 1) throw new Error('Escribe el número de periodos (por ejemplo 10).');
+      if (!p || p < 1) throw new Error('Escribe el número de fechas o periodos.');
       if (!start) throw new Error('Elige la fecha de inicio.');
     } catch (e) { return setError(e.message); }
     const ok = await run(async () => {
-      check(await supabase.from('savings_groups').insert({
-        name: name.trim(), contribution_amount: a, frequency: freq, periods: p, start_date: start, status: 'Activa',
+      check(await supabase.rpc('create_tanda', {
+        p_name: name.trim(), p_amount: a, p_frequency: freq, p_periods: p, p_start: start, p_participants: n,
       }));
       await reload();
-    }, 'Tanda creada');
+    }, 'Tanda creada con todas sus fechas');
     if (ok) onClose();
   }
 
   return (
     <Modal title="Nueva tanda" onClose={onClose}>
       {error && <div className="err-box">{error}</div>}
-      <Field label="Nombre"><input value={name} onChange={(e) => setName(e.target.value)} placeholder="Ej. Tanda Noviembre" autoFocus /></Field>
+      <Field label="Nombre"><input value={name} onChange={(e) => setName(e.target.value)} placeholder="Ej. Tanda noviembre" autoFocus /></Field>
       <div className="two">
-        <Field label="Aportación"><MoneyInput value={amount} onChange={setAmount} /></Field>
+        <Field label="Participantes"><input type="number" inputMode="numeric" min="1" value={nPart}
+          onChange={(e) => { setNPart(e.target.value); if (!periodsTouched) setPeriods(e.target.value); }} /></Field>
+        <Field label="Aportación por persona"><MoneyInput value={amount} onChange={setAmount} /></Field>
+      </div>
+      <div className="two">
+        <Field label="Número de fechas"><input type="number" inputMode="numeric" min="1" value={periods}
+          onChange={(e) => { setPeriods(e.target.value); setPeriodsTouched(true); }} /></Field>
         <Field label="Frecuencia">
           <select value={freq} onChange={(e) => setFreq(e.target.value)}>{FREQS.map((f) => <option key={f}>{f}</option>)}</select>
         </Field>
       </div>
-      <div className="two">
-        <Field label="Número de periodos"><input type="number" inputMode="numeric" min="1" value={periods} onChange={(e) => setPeriods(e.target.value)} /></Field>
-        <Field label="Fecha de inicio"><input type="date" value={start} onChange={(e) => setStart(e.target.value)} /></Field>
-      </div>
-      <button className="btn block" onClick={save} disabled={busy}>{busy ? 'Guardando…' : 'Crear tanda'}</button>
+      <Field label="Fecha de inicio"><input type="date" value={start} onChange={(e) => setStart(e.target.value)} /></Field>
+      {bag > 0 && <div className="help">Bolsa por fecha: <b>{money(bag)}</b>. Se generarán las fechas automáticamente.</div>}
+      <button className="btn block" onClick={save} disabled={busy}>{busy ? 'Creando…' : 'Crear tanda'}</button>
     </Modal>
   );
 }
 
 // ---------- Agregar participante ----------
-function NewParticipantModal({ group, nextTurn, onClose }) {
+function NewParticipantModal({ tanda, onClose }) {
   const { reload } = useData();
   const { busy, run } = useAction();
+  const used = new Set(tanda.participants.map((p) => Number(p.turn_number)));
+  let first = 1;
+  while (used.has(first)) first++;
   const [name, setName] = useState('');
   const [phone, setPhone] = useState('');
-  const [turn, setTurn] = useState(String(nextTurn));
+  const [turn, setTurn] = useState(String(first));
   const [error, setError] = useState('');
 
   async function save() {
     const t = Math.round(Number(turn));
     if (!name.trim()) return setError('Escribe el nombre del participante.');
     if (!t || t < 1) return setError('El turno debe ser un número desde 1.');
+    if (used.has(t)) return setError(`El turno ${t} ya está asignado a otra persona.`);
+    if (tanda.participants.length >= tanda.nPart) return setError(`Esta tanda ya tiene sus ${tanda.nPart} participantes.`);
     const ok = await run(async () => {
-      check(await supabase.from('participants').insert({ group_id: group.id, name: name.trim(), phone: phone.trim() || null, turn_number: t }));
+      check(await supabase.from('participants').insert({ group_id: tanda.id, name: name.trim(), phone: phone.trim() || null, turn_number: t }));
       await reload();
     }, 'Participante agregado');
     if (ok) onClose();
@@ -79,6 +94,7 @@ function NewParticipantModal({ group, nextTurn, onClose }) {
   return (
     <Modal title="Agregar participante" onClose={onClose}>
       {error && <div className="err-box">{error}</div>}
+      <p className="muted" style={{ marginTop: 0 }}>Van {tanda.participants.length} de {tanda.nPart}.</p>
       <Field label="Nombre"><input value={name} onChange={(e) => setName(e.target.value)} autoFocus /></Field>
       <div className="two">
         <Field label="Teléfono (opcional)"><input type="tel" value={phone} onChange={(e) => setPhone(e.target.value)} /></Field>
@@ -89,172 +105,192 @@ function NewParticipantModal({ group, nextTurn, onClose }) {
   );
 }
 
-// ---------- Registrar aportación ----------
-function ContributionModal({ group, p, onClose }) {
-  const { reload } = useData();
-  const { busy, run } = useAction();
-  const [amount, setAmount] = useState(String(group.contribution_amount ?? ''));
-  const [date, setDate] = useState(today());
-  const [label, setLabel] = useState(`${p.contribs.length + 1}`);
-  const [error, setError] = useState('');
-
-  async function save() {
-    let a;
-    try {
-      a = parseAmount(amount, 'el monto de la aportación');
-      if (!date) throw new Error('Elige la fecha.');
-    } catch (e) { return setError(e.message); }
-    const ok = await run(async () => {
-      check(await supabase.from('contributions').insert({
-        participant_id: p.id, amount: a, contribution_date: date,
-        period_label: label.trim() ? `${group.frequency === 'Semanal' ? 'Semana' : 'Periodo'} ${label.trim()}` : null,
-      }));
-      await reload();
-    }, 'Aportación registrada');
-    if (ok) onClose();
-  }
-
+// ---------- Historial de un participante ----------
+function HistoryModal({ tanda, p, onClose }) {
+  const rows = tanda.periods.map((per) => ({ per, c: per.byPart[p.id] }));
+  const total = r2(rows.reduce((t, r) => t + (r.c ? Number(r.c.amount) : 0), 0));
   return (
-    <Modal title={`Aportación de ${p.name}`} onClose={onClose}>
-      {error && <div className="err-box">{error}</div>}
-      <p className="muted" style={{ marginTop: 0 }}>Lleva aportado {money(p.contributed)} · Saldo {money(p.saldo)}</p>
-      <Field label="Monto"><MoneyInput value={amount} onChange={setAmount} autoFocus /></Field>
-      <div className="two">
-        <Field label="Fecha"><input type="date" value={date} onChange={(e) => setDate(e.target.value)} /></Field>
-        <Field label="Número de periodo"><input value={label} onChange={(e) => setLabel(e.target.value)} /></Field>
-      </div>
-      <button className="btn block" onClick={save} disabled={busy}>{busy ? 'Guardando…' : 'Guardar aportación'}</button>
-    </Modal>
-  );
-}
-
-// ---------- Compra con saldo de tanda ----------
-function PurchaseModal({ p, onClose }) {
-  const { reload } = useData();
-  const { busy, run } = useAction();
-  const [desc, setDesc] = useState('');
-  const [total, setTotal] = useState('');
-  const [used, setUsed] = useState('');
-  const [date, setDate] = useState(today());
-  const [error, setError] = useState('');
-
-  const totalN = Number(total) || 0;
-  // Si el usuario no escribe cuánto saldo usar, se propone el máximo posible.
-  const usedN = used === '' ? Math.min(p.saldo, totalN) : Number(used) || 0;
-  const extra = r2(totalN - usedN);
-
-  async function save() {
-    setError('');
-    let t, u;
-    try {
-      if (!desc.trim()) throw new Error('Escribe qué compró.');
-      t = parseAmount(total, 'el total de la compra');
-      u = parseAmount(used === '' ? String(Math.min(p.saldo, t)) : used, 'el saldo a usar', { allowZero: true });
-      if (u > p.saldo + 0.005) throw new Error(`Solo tiene ${money(p.saldo)} de saldo disponible.`);
-      if (u > t + 0.005) throw new Error('El saldo usado no puede ser mayor al total de la compra.');
-      if (!date) throw new Error('Elige la fecha.');
-    } catch (e) { return setError(e.message); }
-    const ok = await run(async () => {
-      check(await supabase.from('participant_purchases').insert({
-        participant_id: p.id, description: desc.trim(), balance_used: u, extra_paid: r2(t - u), purchase_date: date,
-      }));
-      await reload();
-    }, 'Compra registrada');
-    if (ok) onClose();
-  }
-
-  return (
-    <Modal title={`Compra de ${p.name}`} onClose={onClose}>
-      {error && <div className="err-box">{error}</div>}
-      <div className="help">Saldo disponible: <b>{money(p.saldo)}</b></div>
-      <Field label="¿Qué compró?"><input value={desc} onChange={(e) => setDesc(e.target.value)} autoFocus /></Field>
-      <Field label="Total de la compra"><MoneyInput value={total} onChange={setTotal} /></Field>
-      <Field label="Saldo de tanda a usar (déjalo vacío para usar el máximo)">
-        <MoneyInput value={used} onChange={setUsed} placeholder={String(Math.min(p.saldo, totalN) || 0)} />
-      </Field>
-      <Field label="Fecha"><input type="date" value={date} onChange={(e) => setDate(e.target.value)} /></Field>
-      {totalN > 0 && (
-        <div className="help">
-          Usa del saldo: <b>{money(usedN)}</b> · Paga aparte: <b>{money(Math.max(0, extra))}</b> · Le queda de saldo: <b>{money(p.saldo - usedN)}</b>
-        </div>
-      )}
-      <button className="btn block" onClick={save} disabled={busy}>{busy ? 'Guardando…' : 'Registrar compra'}</button>
-    </Modal>
-  );
-}
-
-// ---------- Historial ----------
-function HistoryModal({ p, onClose }) {
-  const { reload } = useData();
-  const { run } = useAction();
-  const items = [
-    ...p.contribs.map((c) => ({ kind: 'c', id: c.id, date: c.contribution_date, at: c.created_at, text: `Aportación${c.period_label ? ` · ${c.period_label}` : ''}`, amount: c.amount, sign: '+' })),
-    ...p.purchases.map((c) => ({ kind: 'p', id: c.id, date: c.purchase_date, at: c.created_at, text: `Compra: ${c.description}`, amount: c.balance_used, sign: '−', extra: c.extra_paid })),
-  ].sort((a, b) => (a.date + a.at < b.date + b.at ? 1 : -1));
-
-  async function del(it) {
-    if (!confirmar('¿Eliminar este registro? Esto cambia el saldo del participante.')) return;
-    await run(async () => {
-      check(await supabase.from(it.kind === 'c' ? 'contributions' : 'participant_purchases').delete().eq('id', it.id));
-      await reload();
-    }, 'Registro eliminado');
-  }
-
-  return (
-    <Modal title={`Historial de ${p.name}`} onClose={onClose}>
-      <div className="two small" style={{ marginBottom: '.6rem' }}>
-        <div>Aportado: <b>{money(p.contributed)}</b></div>
-        <div>Usado: <b>{money(p.used)}</b></div>
-        <div>Saldo: <b>{money(p.saldo)}</b></div>
-        <div>Pagado aparte: <b>{money(p.extra)}</b></div>
-      </div>
-      {items.length === 0 && <div className="muted">Sin movimientos todavía.</div>}
-      {items.map((it) => (
-        <div key={it.kind + it.id} className="list-item small">
-          <div className="row">
-            <div>{it.text}<div className="muted">{fmtDate(it.date)}</div></div>
-            <b>{it.sign}{money(it.amount)}</b>
+    <Modal title={`Pagos de ${p.name}`} onClose={onClose}>
+      <p className="muted" style={{ marginTop: 0 }}>
+        Turno {p.turn_number} · {p.paid} de {tanda.periods.length} pagados · Aportado {money(total)}
+        {p.received ? ' · Ya recibió su pedido' : ''}
+      </p>
+      {rows.map(({ per, c }) => (
+        <div key={per.id} className="pay-row small">
+          <div>
+            Fecha {per.period_number} · {fmtDate(per.scheduled_date)}
+            {c && <div className="muted">Pagó el {fmtDate(c.contribution_date)}</div>}
+            {per.beneficiary_participant_id === p.id && per.financed && <div className="muted">Su pedido se financió en esta fecha</div>}
           </div>
-          {it.kind === 'p' && num0(it.extra) > 0 && <div className="muted">Pagó aparte: {money(it.extra)}</div>}
-          <button className="btn sm danger" style={{ marginTop: 4 }} onClick={() => del(it)}>Eliminar</button>
+          <span className={`badge ${c ? 'ok' : 'warn'}`}>{c ? 'Pagado' : 'Pendiente'}</span>
         </div>
       ))}
     </Modal>
+  );
+}
+
+// ---------- Detalle de un periodo (pagos de un clic) ----------
+function PeriodDetail({ tanda, periodId, onBack }) {
+  const { reload } = useData();
+  const { run } = useAction();
+  const [selling, setSelling] = useState(false);
+  const per = tanda.periods.find((p) => p.id === periodId);
+  if (!per) return <Empty>Periodo no encontrado.</Empty>;
+
+  const total = tanda.participants.length;
+  const pct = tanda.nPart ? Math.min(100, Math.round((per.paidCount / tanda.nPart) * 100)) : 0;
+  // El excedente solo puede "pasar" si existe un periodo siguiente que aún no tiene pedido.
+  const nextPer = tanda.periods.find((p) => p.period_number === per.period_number + 1);
+  const isLast = !nextPer || nextPer.financed;
+  const sale = per.sale;
+  const beneficiary = tanda.participants.find((p) => p.id === per.beneficiary_participant_id);
+  const sinAplicar = sale ? r2(per.bag - sale.paidTanda - num0(per.surplus_amount)) : 0;
+
+  const pay = (p) => run(async () => {
+    check(await supabase.rpc('pay_contribution', { p_participant_id: p.id, p_period_id: per.id, p_date: today() }));
+    await reload();
+  }, `${p.name}: pago registrado`);
+
+  const unpay = async (p) => {
+    if (!confirmar(`¿Quitar el pago de ${p.name} en la fecha ${per.period_number}? (Se usa para corregir un error)`)) return;
+    await run(async () => {
+      check(await supabase.rpc('unpay_contribution', { p_participant_id: p.id, p_period_id: per.id }));
+      await reload();
+    }, 'Pago corregido');
+  };
+
+  return (
+    <>
+      <button className="btn sm sec" onClick={onBack}>← {tanda.name}</button>
+      <div className="row" style={{ marginTop: '.8rem' }}>
+        <h1 style={{ margin: 0 }}>Fecha {per.period_number} de {tanda.periods.length}</h1>
+        <span className={`badge ${per.financed ? 'ok' : ''}`}>{per.financed ? 'Pedido registrado' : 'Abierto'}</span>
+      </div>
+      <div className="muted">{tanda.name} · programada para el {fmtDate(per.scheduled_date)}</div>
+
+      <div className="card" style={{ marginTop: '.8rem' }}>
+        <b>{per.paidCount} de {tanda.nPart} participantes han pagado</b>
+        <div className="progress"><div style={{ width: `${pct}%` }} /></div>
+        <div className="two small">
+          <div>Recaudado: <b>{money(per.collected)}</b></div>
+          <div>Falta para la bolsa: <b>{money(per.missing)}</b></div>
+          {per.carryIn > 0 && <div>Viene del periodo anterior: <b>{money(per.carryIn)}</b></div>}
+          <div>Bolsa disponible: <b>{money(per.bag)}</b></div>
+        </div>
+      </div>
+
+      <h2>Le toca el pedido a</h2>
+      {!sale ? (
+        <div className="card">
+          <div className="row">
+            <b>{per.turnHolder ? `Turno ${per.turnHolder.turn_number} · ${per.turnHolder.name}` : 'Nadie tiene asignado este turno'}</b>
+          </div>
+          {per.bag <= 0 && <div className="muted small" style={{ marginTop: 4 }}>Registra primero las aportaciones para tener bolsa.</div>}
+          {per.bag > 0 && per.missing > 0.005 && <div className="muted small" style={{ marginTop: 4 }}>Todavía faltan {money(per.missing)} por reunir.</div>}
+          <div className="actions">
+            <button className="btn" disabled={per.bag <= 0 || total === 0} onClick={() => setSelling(true)}>Registrar pedido del turno</button>
+          </div>
+        </div>
+      ) : (
+        <>
+          <div className="card">
+            <div className="row"><h3>{beneficiary?.name || sale.customer?.name}</h3><span className="badge ok">Turno {beneficiary?.turn_number}</span></div>
+            <table style={{ width: '100%', marginTop: '.5rem' }} className="small">
+              <tbody>
+                <tr><td>Bolsa reunida</td><td className="right"><b>{money(per.bag)}</b></td></tr>
+                <tr><td>Costo ADI</td><td className="right">{money(sale.cost)}</td></tr>
+                <tr><td>Precio de venta</td><td className="right">{money(sale.price)}</td></tr>
+                <tr><td>Utilidad esperada</td><td className="right"><b>{money(sale.profit)}</b></td></tr>
+                <tr><td>Bolsa aplicada al pedido</td><td className="right">{money(sale.paidTanda)}</td></tr>
+                {sale.balance > 0.005 && <tr><td>Diferencia a cargo del participante</td><td className="right"><b style={{ color: 'var(--danger)' }}>{money(sale.balance)}</b></td></tr>}
+                {num0(per.surplus_amount) > 0 && <tr><td>Excedente de la bolsa ({per.surplus_action === 'Devuelto' ? 'devuelto al participante' : 'pasó al siguiente periodo'})</td><td className="right">{money(per.surplus_amount)}</td></tr>}
+                {sinAplicar > 0.005 && <tr><td>Pagado después, en resguardo sin aplicar</td><td className="right">{money(sinAplicar)}</td></tr>}
+              </tbody>
+            </table>
+          </div>
+          <SaleCard s={sale} />
+        </>
+      )}
+
+      <h2>Pagos de esta fecha</h2>
+      {total === 0 && <Empty>Primero agrega participantes a la tanda.</Empty>}
+      <div className="card">
+        {tanda.participants.map((p) => {
+          const c = per.byPart[p.id];
+          return (
+            <div key={p.id} className="pay-row">
+              <div style={{ minWidth: 0 }}>
+                <b>{p.name}</b>
+                <div className="muted small">
+                  Turno {p.turn_number}{c ? ` · pagó el ${fmtDate(c.contribution_date)}` : ''}
+                </div>
+              </div>
+              <div className="row" style={{ gap: '.4rem' }}>
+                <span className={`badge ${c ? 'ok' : 'warn'}`}>{c ? 'Pagado' : 'Pendiente'}</span>
+                {c
+                  ? <button className="btn sm sec" onClick={() => unpay(p)} disabled={per.financed}>Corregir</button>
+                  : <button className="btn sm" onClick={() => pay(p)}>Marcar pagado</button>}
+              </div>
+            </div>
+          );
+        })}
+        {per.financed && total > 0 && <div className="muted small" style={{ marginTop: 6 }}>Para corregir un pago de una fecha con pedido registrado, elimina primero la venta de esa fecha.</div>}
+      </div>
+      <div className="muted small">Cada pago registra automáticamente {money(tanda.amount)}, la aportación configurada de la tanda.</div>
+
+      {selling && (
+        <NewSaleModal
+          onClose={() => setSelling(false)}
+          period={{
+            id: per.id, number: per.period_number, total: tanda.periods.length, bag: per.bag, missing: per.missing,
+            candidates: tanda.participants, defaultBeneficiaryId: per.turnHolder?.id || '', isLast,
+          }}
+        />
+      )}
+    </>
   );
 }
 const num0 = (v) => Number(v) || 0;
 
 // ---------- Detalle de tanda ----------
 function GroupDetail({ id, onBack }) {
-  const { raw, participants, reload } = useData();
+  const { tandas, reload } = useData();
   const { run } = useAction();
-  const g = raw.groups.find((x) => x.id === id);
-  const [modal, setModal] = useState(null); // {type, p}
-  if (!g) return <Empty>Tanda no encontrada.</Empty>;
+  const [tab, setTab] = useState('periodos');
+  const [modal, setModal] = useState(null);
+  const [perId, setPerId] = useState(null);
+  const t = tandas.find((x) => x.id === id);
+  if (!t) return <Empty>Tanda no encontrada.</Empty>;
+  if (perId) return <PeriodDetail tanda={t} periodId={perId} onBack={() => setPerId(null)} />;
 
-  const mine = participants.filter((p) => p.group_id === g.id).sort((a, b) => a.turn_number - b.turn_number);
-  const nextTurn = mine.length ? Math.max(...mine.map((p) => p.turn_number || 0)) + 1 : 1;
-  const totalSaldo = r2(mine.reduce((t, p) => t + p.saldo, 0));
-  const totalAport = r2(mine.reduce((t, p) => t + p.contributed, 0));
+  const financed = t.periods.filter((p) => p.financed).length;
 
   async function toggleStatus() {
-    const next = isActive(g) ? 'Finalizada' : 'Activa';
+    const next = t.active ? 'Finalizada' : 'Activa';
     await run(async () => {
-      check(await supabase.from('savings_groups').update({ status: next }).eq('id', g.id));
+      check(await supabase.from('savings_groups').update({ status: next }).eq('id', t.id));
       await reload();
     }, `Tanda marcada como ${next.toLowerCase()}`);
   }
   async function delGroup() {
-    if (mine.length > 0) return alert('Esta tanda tiene participantes. Elimina primero a los participantes (y sus movimientos).');
-    if (!confirmar(`¿Eliminar la tanda "${g.name}"?`)) return;
+    if (t.participants.length > 0) return alert('Esta tanda tiene participantes. Quítalos primero para poder eliminarla.');
+    if (!confirmar(`¿Eliminar la tanda "${t.name}" y sus fechas?`)) return;
     const ok = await run(async () => {
-      check(await supabase.from('savings_groups').delete().eq('id', g.id));
+      check(await supabase.from('savings_groups').delete().eq('id', t.id));
       await reload();
     }, 'Tanda eliminada');
     if (ok) onBack();
   }
+  async function genPeriods() {
+    await run(async () => {
+      check(await supabase.rpc('generate_periods', { p_group_id: t.id }));
+      await reload();
+    }, 'Fechas generadas');
+  }
   async function delParticipant(p) {
-    if (!confirmar(`¿Eliminar a ${p.name} y todo su historial de aportaciones y compras?`)) return;
+    const blocked = t.periods.some((per) => (per.financed && per.byPart[p.id]) || per.beneficiary_participant_id === p.id);
+    if (blocked) return alert('No se puede quitar a esta persona porque participó en una fecha que ya financió un pedido.');
+    if (!confirmar(`¿Quitar a ${p.name} y sus pagos registrados?`)) return;
     await run(async () => {
       check(await supabase.from('contributions').delete().eq('participant_id', p.id));
       check(await supabase.from('participant_purchases').delete().eq('participant_id', p.id));
@@ -267,61 +303,88 @@ function GroupDetail({ id, onBack }) {
     <>
       <button className="btn sm sec" onClick={onBack}>← Tandas</button>
       <div className="row" style={{ marginTop: '.8rem' }}>
-        <h1 style={{ margin: 0 }}>{g.name}</h1>
-        <span className={`badge ${isActive(g) ? 'ok' : ''}`}>{g.status}</span>
+        <h1 style={{ margin: 0 }}>{t.name}</h1>
+        <span className={`badge ${t.active ? 'ok' : ''}`}>{t.status}</span>
       </div>
       <div className="card" style={{ marginTop: '.8rem' }}>
         <div className="two small">
-          <div>Aportación: <b>{money(g.contribution_amount)}</b></div>
-          <div>{g.frequency} · {g.periods} periodos</div>
-          <div>Inicio: <b>{fmtDate(g.start_date)}</b></div>
-          <div>Participantes: <b>{mine.length}</b></div>
-          <div>Total aportado: <b>{money(totalAport)}</b></div>
-          <div>Saldos disponibles: <b>{money(totalSaldo)}</b></div>
+          <div>Aportación: <b>{money(t.amount)}</b> por persona</div>
+          <div>{t.frequency} · {t.periods.length} fechas</div>
+          <div>Participantes: <b>{t.participants.length} de {t.nPart}</b></div>
+          <div>Bolsa por fecha: <b>{money(t.nPart * t.amount)}</b></div>
+          <div>Total recaudado: <b>{money(t.collected)}</b></div>
+          <div>Pedidos financiados: <b>{financed} de {t.periods.length}</b></div>
         </div>
         <div className="actions">
-          <button className="btn" onClick={() => setModal({ type: 'newp' })}>+ Participante</button>
-          <button className="btn sm sec" onClick={toggleStatus}>{isActive(g) ? 'Marcar finalizada' : 'Reactivar'}</button>
+          <button className="btn sm sec" onClick={toggleStatus}>{t.active ? 'Marcar finalizada' : 'Reactivar'}</button>
           <button className="btn sm danger" onClick={delGroup}>Eliminar tanda</button>
         </div>
       </div>
 
-      <h2>Participantes por turno</h2>
-      {mine.length === 0 && <Empty>Agrega al primer participante.</Empty>}
-      {mine.map((p) => (
-        <div key={p.id} className="card">
-          <div className="row">
-            <h3>Turno {p.turn_number} · {p.name}</h3>
-            <b style={{ color: 'var(--brand-dark)' }}>{money(p.saldo)}</b>
-          </div>
-          <div className="muted small">
-            Aportado {money(p.contributed)} · Usado {money(p.used)} {p.phone ? `· ${p.phone}` : ''}
-          </div>
-          <div className="actions">
-            <button className="btn sm" onClick={() => setModal({ type: 'contrib', p })}>+ Aportación</button>
-            <button className="btn sm sec" onClick={() => setModal({ type: 'buy', p })}>Registrar compra</button>
-            <button className="btn sm sec" onClick={() => setModal({ type: 'hist', p })}>Historial</button>
-            <button className="btn sm danger" onClick={() => delParticipant(p)}>Quitar</button>
-          </div>
-        </div>
-      ))}
+      <div className="tabs">
+        <button className={tab === 'periodos' ? 'active' : ''} onClick={() => setTab('periodos')}>Fechas</button>
+        <button className={tab === 'participantes' ? 'active' : ''} onClick={() => setTab('participantes')}>Participantes</button>
+      </div>
 
-      {modal?.type === 'newp' && <NewParticipantModal group={g} nextTurn={nextTurn} onClose={() => setModal(null)} />}
-      {modal?.type === 'contrib' && <ContributionModal group={g} p={participants.find((x) => x.id === modal.p.id)} onClose={() => setModal(null)} />}
-      {modal?.type === 'buy' && <PurchaseModal p={participants.find((x) => x.id === modal.p.id)} onClose={() => setModal(null)} />}
-      {modal?.type === 'hist' && <HistoryModal p={participants.find((x) => x.id === modal.p.id)} onClose={() => setModal(null)} />}
+      {tab === 'periodos' && (
+        t.periods.length === 0 ? (
+          <div className="card">
+            <p style={{ marginTop: 0 }}>Esta tanda todavía no tiene fechas generadas.</p>
+            <button className="btn" onClick={genPeriods}>Generar fechas</button>
+          </div>
+        ) : t.periods.map((per) => (
+          <div key={per.id} className="card" style={{ cursor: 'pointer' }} onClick={() => setPerId(per.id)}>
+            <div className="row">
+              <h3>Fecha {per.period_number} de {t.periods.length} · {fmtDate(per.scheduled_date)}</h3>
+              <span className={`badge ${per.financed ? 'ok' : per.complete ? '' : 'warn'}`}>
+                {per.financed ? 'Pedido registrado' : per.complete ? 'Bolsa completa' : 'Reuniendo'}
+              </span>
+            </div>
+            <div className="muted small">
+              {per.paidCount} de {t.nPart} pagaron · {money(per.collected)} · Turno: {per.financed
+                ? (t.participants.find((p) => p.id === per.beneficiary_participant_id)?.name || '—')
+                : (per.turnHolder?.name || 'sin asignar')}
+            </div>
+          </div>
+        ))
+      )}
+
+      {tab === 'participantes' && (
+        <>
+          <div className="actions" style={{ marginTop: 0, marginBottom: '.8rem' }}>
+            <button className="btn" onClick={() => setModal({ type: 'newp' })} disabled={t.participants.length >= t.nPart}>+ Participante</button>
+          </div>
+          {t.participants.length === 0 && <Empty>Agrega al primer participante.</Empty>}
+          {t.participants.map((p) => (
+            <div key={p.id} className="card">
+              <div className="row">
+                <h3>Turno {p.turn_number} · {p.name}</h3>
+                {p.received && <span className="badge ok">Ya recibió su pedido</span>}
+              </div>
+              <div className="muted small">{p.paid} de {t.periods.length} pagos{p.phone ? ` · ${p.phone}` : ''}</div>
+              <div className="actions">
+                <button className="btn sm sec" onClick={() => setModal({ type: 'hist', id: p.id })}>Historial de pagos</button>
+                <button className="btn sm danger" onClick={() => delParticipant(p)}>Quitar</button>
+              </div>
+            </div>
+          ))}
+        </>
+      )}
+
+      {modal?.type === 'newp' && <NewParticipantModal tanda={t} onClose={() => setModal(null)} />}
+      {modal?.type === 'hist' && <HistoryModal tanda={t} p={t.participants.find((x) => x.id === modal.id)} onClose={() => setModal(null)} />}
     </>
   );
 }
 
 export default function Tandas() {
-  const { raw, participants } = useData();
+  const { tandas } = useData();
   const [creating, setCreating] = useState(false);
   const [sel, setSel] = useState(null);
 
   if (sel) return <GroupDetail id={sel} onBack={() => setSel(null)} />;
 
-  const groups = [...raw.groups].sort((a, b) => (a.start_date < b.start_date ? 1 : -1));
+  const groups = [...tandas].sort((a, b) => (a.start_date < b.start_date ? 1 : -1));
 
   return (
     <>
@@ -330,15 +393,16 @@ export default function Tandas() {
         <button className="btn" onClick={() => setCreating(true)}>+ Nueva tanda</button>
       </div>
       {groups.length === 0 ? <Empty>Todavía no hay tandas.</Empty> : groups.map((g) => {
-        const mine = participants.filter((p) => p.group_id === g.id);
+        const next = g.periods.find((p) => !p.financed);
         return (
           <div key={g.id} className="card" style={{ cursor: 'pointer' }} onClick={() => setSel(g.id)}>
             <div className="row">
               <h3>{g.name}</h3>
-              <span className={`badge ${isActive(g) ? 'ok' : ''}`}>{g.status}</span>
+              <span className={`badge ${g.active ? 'ok' : ''}`}>{g.status}</span>
             </div>
             <div className="muted small">
-              {money(g.contribution_amount)} {String(g.frequency || '').toLowerCase()} · {mine.length} participante(s) · Saldos: {money(mine.reduce((t, p) => t + p.saldo, 0))}
+              {money(g.amount)} {String(g.frequency || '').toLowerCase()} · {g.participants.length} de {g.nPart} participantes · Recaudado {money(g.collected)}
+              {g.active && next && <><br />Próximo turno: fecha {next.period_number} · {next.turnHolder?.name || 'sin asignar'}</>}
             </div>
           </div>
         );

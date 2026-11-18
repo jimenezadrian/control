@@ -1,13 +1,13 @@
 import React, { createContext, useCallback, useContext, useEffect, useMemo, useState } from 'react';
 import { supabase } from './supabase.js';
-import { computeCapital, computeCustomers, computeParticipants, computeSales, friendlyError } from './utils.js';
+import { computeCapital, computeCustomers, computeSales, computeTandas, friendlyError } from './utils.js';
 
 const Ctx = createContext(null);
 export const useData = () => useContext(Ctx);
 
 const EMPTY = {
   customers: [], sales: [], payments: [], groups: [], participants: [],
-  contributions: [], purchases: [], capital: [],
+  contributions: [], purchases: [], capital: [], items: [], periods: [],
 };
 
 const TABLES = {
@@ -19,6 +19,8 @@ const TABLES = {
   contributions: 'contributions',
   purchases: 'participant_purchases',
   capital: 'capital_movements',
+  items: 'sale_items',
+  periods: 'savings_periods',
 };
 
 // Pocos registros (negocio familiar): se cargan todas las tablas y se calcula en el navegador.
@@ -52,9 +54,9 @@ export function DataProvider({ children }) {
   const derived = useMemo(() => {
     const sales = computeSales(raw);
     const customers = computeCustomers(raw, sales);
-    const participants = computeParticipants(raw);
     const capital = computeCapital(raw, sales);
-    return { sales, customers, participants, capital };
+    const tandas = computeTandas(raw, sales);
+    return { sales, customers, tandas, capital };
   }, [raw]);
 
   return <Ctx.Provider value={{ raw, ...derived, loading, error, reload }}>{children}</Ctx.Provider>;
