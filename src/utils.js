@@ -5,12 +5,12 @@ export const num = (v) => Number(v) || 0;
 export const r2 = (n) => Math.round((Number(n) + Number.EPSILON) * 100) / 100;
 export const money = (n) => mxn.format(num(n));
 
-// Fecha local de hoy como YYYY-MM-DD (sin desfase por zona horaria)
-export function today() {
-  const d = new Date();
-  const m = String(d.getMonth() + 1).padStart(2, '0');
-  const day = String(d.getDate()).padStart(2, '0');
-  return `${d.getFullYear()}-${m}-${day}`;
+// Hoy en la Ciudad de México como YYYY-MM-DD, sin importar la zona horaria del
+// dispositivo. Las fechas de la base son solo-día ('YYYY-MM-DD') y nunca se pasan
+// por Date/UTC, así que no hay desfases de un día.
+const MX_DAY = new Intl.DateTimeFormat('en-CA', { timeZone: 'America/Mexico_City', year: 'numeric', month: '2-digit', day: '2-digit' });
+export function today(now = new Date()) {
+  return MX_DAY.format(now);
 }
 
 // 'YYYY-MM-DD' -> 'dd/mm/aaaa'

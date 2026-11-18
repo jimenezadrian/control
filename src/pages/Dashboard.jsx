@@ -1,95 +1,186 @@
 import React, { useMemo, useState } from 'react';
 import { useData } from '../data.jsx';
-import { Stat } from '../ui.jsx';
-import { computeTandaStats, fmtDate, money, monthKey, monthLabel, num, r2, today } from '../utils.js';
+import { Empty, Field, Stat } from '../ui.jsx';
+import { PRESETS, lastMonthKeys, monthName, resolvePeriod, validateRange } from '../period.js';
+import { computePeriodStats } from '../stats.js';
+import { computeTandaStats, fmtDate, money, today } from '../utils.js';
 
-function lastMonths(n) {
-  const out = [];
-  const d = new Date();
-  d.setDate(1);
-  for (let i = 0; i < n; i++) {
-    out.push(`${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}`);
-    d.setMonth(d.getMonth() - 1);
-  }
-  return out;
+const KEY = 'vianney_dashboard_periodo';
+function loadSel() {
+  try {
+    const s = JSON.parse(localStorage.getItem(KEY));
+    if (s && PRESETS.some(([id]) => id === s.preset)) return s;
+  } catch { /* sin almacenamiento: se usa el valor por defecto */ }
+  return { preset: 'mes' };
+}
+function saveSel(s) {
+  try { localStorage.setItem(KEY, JSON.stringify(s)); } catch { /* ignorar */ }
+}
+
+function Chart({ buckets }) {
+  const max = Math.max(...buckets.flatMap((b) => [b.ventas, b.cobrado]), 0);
+  if (!buckets.length) return <div className="muted">El periodo es muy largo para graficarlo; elige uno más corto.</div>;
+  if (max <= 0) return <div className="muted">Sin ventas ni cobros en este periodo.</div>;
+  const step = buckets.length > 16 ? Math.ceil(buckets.length / 8) : 1;
+  return (
+    <>
+      <div className="legend">
+        <span><i style={{ background: 'var(--chart-1)' }} />Ventas</span>
+        <span><i style={{ background: 'var(--chart-2)' }} />Cobrado</span>
+      </div>
+      <div className="chart" role="img" aria-label="Ventas y cobros del periodo">
+        {buckets.map((b, i) => (
+          <div className="col" key={i} title={`${b.label}: ventas ${money(b.ventas)} · cobrado ${money(b.cobrado)}`}>
+            <div className="bar a" style={{ height: `${(b.ventas / max) * 100}%` }} />
+            <div className="bar b" style={{ height: `${(b.cobrado / max) * 100}%` }} />
+          </div>
+        ))}
+      </div>
+      <div className="chart-x">
+        {buckets.map((b, i) => <span key={i}>{i % step === 0 ? b.label : ''}</span>)}
+      </div>
+    </>
+  );
 }
 
 export default function Dashboard({ go }) {
-  const { raw, sales, customers, capital: c, tandas } = useData();
-  const [month, setMonth] = useState(today().slice(0, 7));
+  const { raw, sales, customers, tandas } = useData();
+  const hoy = today();
+  const [sel, setSel] = useState(loadSel);
+  const [draft, setDraft] = useState({ from: sel.from || '', to: sel.to || '' });
+  const [rangeError, setRangeError] = useState('');
 
-  const t = useMemo(() => computeTandaStats(tandas), [tandas]);
+  const period = useMemo(() => resolvePeriod(sel, hoy), [sel, hoy]);
+  const stats = useMemo(
+    () => (period.error ? null : computePeriodStats(raw, sales, tandas, period, hoy)),
+    [raw, sales, tandas, period, hoy],
+  );
+  const now = useMemo(() => computeTandaStats(tandas, hoy), [tandas, hoy]);
+  const porEntregar = useMemo(() => sales.reduce((a, s) => a + s.pendingItems.length, 0), [sales]);
 
-  const k = useMemo(() => {
-    const inMonth = sales.filter((s) => monthKey(s.sale_date) === month);
-    const ids = new Set(inMonth.map((s) => s.id));
-    const sum = (arr, f) => r2(arr.reduce((a, x) => a + f(x), 0));
-    const salesIds = new Set(sales.map((s) => s.id));
-    return {
-      count: inMonth.length,
-      normales: sum(inMonth.filter((s) => !s.isTanda), (s) => s.price),
-      tanda: sum(inMonth.filter((s) => s.isTanda), (s) => s.price),
-      total: sum(inMonth, (s) => s.price),
-      utilidad: sum(inMonth, (s) => s.profit),
-      utilidadTanda: sum(inMonth.filter((s) => s.isTanda), (s) => s.profit),
-      cobrado: r2(raw.payments.filter((p) => salesIds.has(p.sale_id) && monthKey(p.payment_date) === month).reduce((a, p) => a + num(p.amount), 0)),
-      porEntregar: sales.reduce((a, s) => a + s.pendingItems.length, 0),
-      ids,
-    };
-  }, [raw, sales, month]);
+  const update = (next) => { setSel(next); saveSel(next); setRangeError(''); };
 
-  const activity = useMemo(() => {
-    const cust = Object.fromEntries(raw.customers.map((x) => [x.id, x.name]));
-    const saleById = Object.fromEntries(sales.map((s) => [s.id, s]));
-    const part = Object.fromEntries(raw.participants.map((p) => [p.id, p.name]));
-    const items = [];
-    raw.payments.forEach((p) => items.push({
-      at: p.created_at,
-      text: p.source === 'tanda' ? `Bolsa de tanda aplicada a ${cust[saleById[p.sale_id]?.customer_id] || 'pedido'}` : `Pago de ${cust[saleById[p.sale_id]?.customer_id] || 'cliente'}`,
-      amount: p.amount, date: p.payment_date,
-    }));
-    raw.sales.forEach((s) => items.push({ at: s.created_at, text: `${s.savings_period_id ? 'Pedido de tanda' : 'Venta'} a ${cust[s.customer_id] || 'cliente'}`, amount: saleById[s.id]?.price ?? s.sale_price, date: s.sale_date }));
-    raw.contributions.filter((x) => x.period_id).forEach((x) => items.push({ at: x.created_at, text: `Aportación de ${part[x.participant_id] || 'participante'} (${x.period_label || 'tanda'})`, amount: x.amount, date: x.contribution_date }));
-    raw.capital.forEach((m) => items.push({ at: m.created_at, text: m.movement_type, amount: m.amount, date: m.movement_date }));
-    return items.sort((a, b) => (a.at < b.at ? 1 : -1)).slice(0, 10);
-  }, [raw, sales]);
+  function onPreset(preset) {
+    if (preset === 'personalizado') {
+      // Arranca con el rango que se estaba viendo para que las cifras no desaparezcan.
+      const from = sel.from && sel.to ? sel.from : period.from;
+      const to = sel.from && sel.to ? sel.to : period.to;
+      setDraft({ from, to });
+      update({ ...sel, preset, from, to });
+    } else {
+      update({ ...sel, preset });
+    }
+  }
+  function applyRange() {
+    const err = validateRange(draft.from, draft.to);
+    if (err) return setRangeError(err);
+    update({ ...sel, preset: 'personalizado', from: draft.from, to: draft.to });
+  }
 
+  const k = stats;
   return (
     <>
-      <div className="row">
-        <h1>Resumen</h1>
-        <select value={month} onChange={(e) => setMonth(e.target.value)} style={{ width: 'auto' }}>
-          {lastMonths(12).map((m) => <option key={m} value={m}>{monthLabel(m)}</option>)}
-        </select>
+      <h1>Resumen</h1>
+
+      <div className="period-box">
+        <Field label="Periodo">
+          <select value={sel.preset} onChange={(e) => onPreset(e.target.value)}>
+            {PRESETS.map(([id, label]) => <option key={id} value={id}>{label}</option>)}
+          </select>
+        </Field>
+
+        {sel.preset === 'mes_elegido' && (
+          <Field label="Mes">
+            <select value={sel.month || hoy.slice(0, 7)} onChange={(e) => update({ ...sel, month: e.target.value })}>
+              {lastMonthKeys(24, hoy).map((m) => <option key={m} value={m}>{monthName(m)}</option>)}
+            </select>
+          </Field>
+        )}
+
+        {sel.preset === 'personalizado' && (
+          <>
+            <div className="two">
+              <Field label="Desde"><input type="date" value={draft.from} onChange={(e) => setDraft({ ...draft, from: e.target.value })} /></Field>
+              <Field label="Hasta"><input type="date" value={draft.to} onChange={(e) => setDraft({ ...draft, to: e.target.value })} /></Field>
+            </div>
+            {rangeError && <div className="err-box">{rangeError}</div>}
+            <button className="btn block" onClick={applyRange}>Aplicar</button>
+          </>
+        )}
+
+        {period.error ? (
+          <div className="period-banner">Elige las dos fechas y pulsa <b>Aplicar</b>.</div>
+        ) : (
+          <div className="period-banner">
+            <span>Mostrando:</span>
+            <b>{period.label}</b>
+            <span className="muted">({period.days} {period.days === 1 ? 'día' : 'días'})</span>
+          </div>
+        )}
       </div>
 
-      <h2 style={{ marginTop: 0 }}>Ventas del mes ({k.count})</h2>
-      <div className="grid">
-        <Stat label="Ventas normales" value={money(k.normales)} />
-        <Stat label="Ventas de tandas" value={money(k.tanda)} />
-        <Stat label="Total de ventas" value={money(k.total)} />
-        <Stat label="Cobrado en el mes" value={money(k.cobrado)} tone="ok" />
-        <Stat label="Utilidad esperada del mes" value={money(k.utilidad)} />
-        <Stat label="…de ventas de tandas" value={money(k.utilidadTanda)} />
-        <Stat label="Pendiente de cobrar (total)" value={money(c.pendiente)} tone="warn" />
-        <Stat label="Productos por entregar" value={k.porEntregar} />
-      </div>
+      {!k ? <Empty>Elige un rango de fechas para ver los indicadores.</Empty> : (
+        <>
+          <h2 style={{ marginTop: 0 }}>Ventas y cobros ({k.ventas.cantidad} {k.ventas.cantidad === 1 ? 'venta' : 'ventas'})</h2>
+          <div className="grid">
+            <Stat label="Ventas normales" value={money(k.ventas.normales)} />
+            <Stat label="Ventas de tandas" value={money(k.ventas.tandas)} />
+            <Stat label="Total de ventas" value={money(k.ventas.total)} />
+            <Stat label="Dinero cobrado" value={money(k.cobros.total)} tone="ok" />
+            <Stat label="…pagos y abonos de clientes" value={money(k.cobros.clientes)} />
+            <Stat label="…bolsa de tandas aplicada" value={money(k.cobros.bolsa)} />
+            <Stat label={`Pendiente de cobrar al ${fmtDate(period.to)}`} value={money(k.cobros.pendiente)} tone="warn" />
+          </div>
 
-      <h2>Tandas</h2>
+          <h2>Utilidad</h2>
+          <div className="grid">
+            <Stat label="Utilidad esperada (ventas del periodo)" value={money(k.utilidad.esperada)} />
+            <Stat label="…de ventas de tandas" value={money(k.utilidad.esperadaTanda)} />
+            <Stat label="Utilidad obtenida en el periodo" value={money(k.utilidad.obtenida)} tone="ok" />
+            <Stat label="…de ventas de tandas" value={money(k.utilidad.obtenidaTanda)} />
+          </div>
+
+          <h2>Tandas en el periodo</h2>
+          <div className="grid">
+            <Stat label="Aportaciones recaudadas" value={money(k.tandas.aportaciones)} tone="ok" />
+            <Stat label="Aportaciones pendientes (fechas vencidas)" value={money(k.tandas.pendientes)} tone="warn" />
+            <Stat label="Fechas con bolsa completa" value={k.tandas.bolsasCompletas} />
+            <Stat label="Pedidos financiados con tanda" value={k.ventas.pedidosTanda} />
+            <Stat label="Bolsa aplicada a pedidos" value={money(k.tandas.bolsaAplicada)} />
+            <Stat label="Participantes que recibieron pedido" value={k.tandas.receptores} />
+            <Stat label={`Dinero de tandas en resguardo al ${fmtDate(period.to)}`} value={money(k.tandas.resguardo)} />
+          </div>
+
+          <h2>Capital</h2>
+          <div className="grid">
+            <Stat label="Capital propio aportado" value={money(k.capital.aportado)} />
+            <Stat label="Capital recuperado" value={money(k.capital.recuperado)} />
+            <Stat label={`Capital pendiente de recuperar al ${fmtDate(period.to)}`} value={money(k.capital.pendiente)} tone="warn" />
+            <Stat label="Retiros de utilidad" value={money(k.capital.retirado)} />
+            <Stat label="Gastos" value={money(k.capital.gastos)} />
+            <Stat label={`Utilidad disponible al ${fmtDate(period.to)}`} value={money(k.utilidad.disponible)} tone="ok" />
+          </div>
+          <div className="help" style={{ marginTop: '.8rem' }}>
+            Las cifras del periodo usan la fecha real de cada venta, pago, aportación o movimiento. Los saldos marcados “al {fmtDate(period.to)}” acumulan todo lo ocurrido hasta esa fecha.
+            Las aportaciones de una tanda no son ingreso ni utilidad: solo cuentan como cobrado cuando la bolsa se aplica a un pedido.
+          </div>
+
+          <h2>Ventas y cobros por {k.buckets[0] && k.buckets[0].start === k.buckets[0].end ? 'día' : 'periodo'}</h2>
+          <div className="card"><Chart buckets={k.buckets} /></div>
+        </>
+      )}
+
+      <h2>Situación actual <span className="muted" style={{ fontFamily: 'var(--font-body)', fontWeight: 400 }}>(no depende del periodo)</span></h2>
       <div className="grid">
-        <Stat label="Tandas activas" value={t.activas} />
-        <Stat label="Participantes" value={t.participantes} />
-        <Stat label="Fechas con pedido" value={t.periodosFinanciados} />
-        <Stat label="Bolsas completas" value={t.bolsasCompletas} />
-        <Stat label="Aportaciones recaudadas" value={money(t.recaudado)} tone="ok" />
-        <Stat label="Aportaciones pendientes (fechas vencidas)" value={money(t.pendiente)} tone="warn" />
-        <Stat label="Ya recibieron su pedido" value={t.recibieron} />
-        <Stat label="Dinero de tandas en resguardo" value={money(c.resguardo)} />
+        <Stat label="Tandas activas" value={now.activas} />
+        <Stat label="Participantes" value={now.participantes} />
+        <Stat label="Clientes" value={customers.length} />
+        <Stat label="Productos por entregar" value={porEntregar} />
       </div>
-      {t.proximos.length > 0 && (
+      {now.proximos.length > 0 && (
         <div className="card" style={{ marginTop: '.8rem' }}>
           <b>Próximo turno</b>
-          {t.proximos.map((x, i) => (
+          {now.proximos.map((x, i) => (
             <div key={i} className="list-item small">
               {x.tanda}: fecha {x.period} de {x.total} · <b>{x.who}</b> · {fmtDate(x.date)}
             </div>
@@ -97,36 +188,25 @@ export default function Dashboard({ go }) {
         </div>
       )}
 
-      <h2>Finanzas</h2>
-      <div className="grid">
-        <Stat label="Capital propio aportado" value={money(c.aportado)} />
-        <Stat label="Capital recuperado" value={money(c.recuperado)} />
-        <Stat label="Capital pendiente de recuperar" value={money(c.invertido)} tone="warn" />
-        <Stat label="Utilidad esperada (todas)" value={money(c.utilidadEstimada)} />
-        <Stat label="Utilidad obtenida (ya cobrada)" value={money(c.utilidadGanada)} tone="ok" />
-        <Stat label="Utilidad de ventas de tandas (obtenida)" value={money(c.utilidadTandaGanada)} />
-        <Stat label="Retiros de utilidad" value={money(c.retirado)} />
-        <Stat label="Gastos" value={money(c.gastos)} />
-      </div>
-      <div className="help" style={{ marginTop: '.8rem' }}>
-        Las aportaciones de una tanda no son ingreso ni utilidad: solo cuentan como cobrado cuando la bolsa se aplica a un pedido, y la utilidad sale de precio de venta − costo ADI. Clientes: {customers.length}.
-      </div>
-
       <div className="actions">
         <button className="btn" onClick={() => go('ventas')}>Ver ventas</button>
         <button className="btn sec" onClick={() => go('tandas')}>Ver tandas</button>
       </div>
 
-      <h2>Actividad reciente</h2>
-      <div className="card">
-        {activity.length === 0 && <div className="muted">Todavía no hay movimientos.</div>}
-        {activity.map((a, i) => (
-          <div key={i} className="list-item row small">
-            <div>{a.text}<div className="muted">{fmtDate(a.date)}</div></div>
-            <b>{money(a.amount)}</b>
+      {k && (
+        <>
+          <h2>Movimientos del periodo</h2>
+          <div className="card">
+            {k.actividad.length === 0 && <div className="muted">No hay movimientos en este periodo.</div>}
+            {k.actividad.map((a, i) => (
+              <div key={i} className="list-item row small">
+                <div>{a.text}<div className="muted">{fmtDate(a.date)}</div></div>
+                <b>{money(a.amount)}</b>
+              </div>
+            ))}
           </div>
-        ))}
-      </div>
+        </>
+      )}
     </>
   );
 }

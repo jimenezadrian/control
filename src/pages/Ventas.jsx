@@ -1,6 +1,7 @@
 import React, { useState } from 'react';
 import { supabase } from '../supabase.js';
 import { useData } from '../data.jsx';
+import CustomerPicker from '../CustomerPicker.jsx';
 import { Empty, Field, Modal, MoneyInput, check, confirmar, parseAmount, useAction } from '../ui.jsx';
 import { fmtDate, money, num, r2, today } from '../utils.js';
 
@@ -52,9 +53,11 @@ const newItem = () => ({ key: keySeq++, name: '', sku: '', qty: '1', cost: '', p
 export function NewSaleModal({ onClose, presetCustomerId, period }) {
   const { customers, reload } = useData();
   const { busy, run } = useAction();
-  const [customerId, setCustomerId] = useState(presetCustomerId || (customers.length ? '' : 'new'));
-  const [newName, setNewName] = useState('');
-  const [newPhone, setNewPhone] = useState('');
+  // customer: null | { id, name } | { isNew: true, name, phone }  (el id nunca se muestra)
+  const [customer, setCustomer] = useState(() => {
+    const c = presetCustomerId && customers.find((x) => x.id === presetCustomerId);
+    return c ? { id: c.id, name: c.name } : null;
+  });
   const [beneficiary, setBeneficiary] = useState(period?.defaultBeneficiaryId || '');
   const [items, setItems] = useState([newItem()]);
   const [deposit, setDeposit] = useState('');
@@ -81,8 +84,8 @@ export function NewSaleModal({ onClose, presetCustomerId, period }) {
       if (period) {
         if (!beneficiary) throw new Error('Elige quién recibe el pedido de este turno.');
       } else {
-        if (!customerId) throw new Error('Elige un cliente.');
-        if (customerId === 'new' && !newName.trim()) throw new Error('Escribe el nombre del cliente nuevo.');
+        if (!customer) throw new Error('Busca y elige un cliente, o registra uno nuevo.');
+        if (customer.isNew && !customer.name.trim()) throw new Error('Escribe el nombre del cliente nuevo.');
       }
       items.forEach((i, n) => {
         const at = `Producto ${n + 1}`;
@@ -101,9 +104,9 @@ export function NewSaleModal({ onClose, presetCustomerId, period }) {
 
     const ok = await run(async () => {
       check(await supabase.rpc('create_sale', {
-        p_customer_id: !period && customerId && customerId !== 'new' ? customerId : null,
-        p_new_customer_name: !period && customerId === 'new' ? newName.trim() : null,
-        p_new_customer_phone: !period && customerId === 'new' ? newPhone.trim() : null,
+        p_customer_id: !period && customer && !customer.isNew ? customer.id : null,
+        p_new_customer_name: !period && customer?.isNew ? customer.name.trim() : null,
+        p_new_customer_phone: !period && customer?.isNew ? (customer.phone || '').trim() : null,
         p_sale_date: date,
         p_deposit: depN,
         p_items: items.map((i) => ({
@@ -137,21 +140,7 @@ export function NewSaleModal({ onClose, presetCustomerId, period }) {
           </Field>
         </>
       ) : (
-        <>
-          <Field label="Cliente">
-            <select value={customerId} onChange={(e) => setCustomerId(e.target.value)}>
-              <option value="">Elige un cliente…</option>
-              {customers.map((c) => <option key={c.id} value={c.id}>{c.name}</option>)}
-              <option value="new">+ Cliente nuevo</option>
-            </select>
-          </Field>
-          {customerId === 'new' && (
-            <div className="two">
-              <Field label="Nombre"><input value={newName} onChange={(e) => setNewName(e.target.value)} /></Field>
-              <Field label="Teléfono (opcional)"><input type="tel" value={newPhone} onChange={(e) => setNewPhone(e.target.value)} /></Field>
-            </div>
-          )}
-        </>
+        <CustomerPicker value={customer} onChange={setCustomer} />
       )}
 
       <h2 style={{ marginTop: '.4rem' }}>Productos</h2>
